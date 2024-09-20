@@ -598,9 +598,10 @@ static inline int mfi_chrdev_register(struct f_mfi *mfi)
 		return err;
 	}
 
-	devt = MKDEV(mfi_major, mfi_get_first_available_minor());
+	mfi->minor = mfi_get_first_available_minor();
+	devt = MKDEV(mfi_major, mfi->minor);
 	pdev = device_create(mfi_class, NULL, devt, NULL, "mfi%d",
-			     mfi_interfaces_cnt);
+			     mfi->minor);
 	if (unlikely(IS_ERR(pdev))) {
 		mfi_dev_err(mfi, "mfi_chrdev_register: device_create\n");
 		return PTR_ERR(pdev);
