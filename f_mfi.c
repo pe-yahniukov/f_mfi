@@ -51,9 +51,6 @@ struct f_mfi {
 	struct usb_request *read_req;
 	struct usb_request *write_req;
 
-	spinlock_t lock;
-	unsigned long flags;
-
 	u8 *in_buf;
 	int in_buf_cnt;
 	wait_queue_head_t in_wait;
@@ -64,6 +61,12 @@ struct f_mfi {
 	int minor;
 	struct cdev cdev;
 	struct task_struct *task;
+
+	/* for in_buf, out_buf access control */
+	spinlock_t lock;
+	unsigned long flags;
+	/* for file operations access control */
+	struct mutex mutex;
 };
 
 struct f_mfi_opts {
@@ -75,12 +78,12 @@ static __always_inline struct f_mfi *func_to_mfi(struct usb_function *f)
 	return container_of(f, struct f_mfi, function);
 }
 
-static __always_inline void mfi_lock(struct f_mfi *mfi)
+static __always_inline void mfi_spin_lock(struct f_mfi *mfi)
 {
 	spin_lock_irqsave(&mfi->lock, mfi->flags);
 }
 
-static __always_inline void mfi_unlock(struct f_mfi *mfi)
+static __always_inline void mfi_spin_unlock(struct f_mfi *mfi)
 {
 	spin_unlock_irqrestore(&mfi->lock, mfi->flags);
 }
@@ -264,9 +267,9 @@ static inline int mfi_send_async(struct f_mfi *mfi)
 	memcpy(mfi->write_req->buf, mfi->out_buf, mfi->out_buf_cnt);
 
 	/* temporary unlock to avoid deadlock in complete callback */
-	mfi_unlock(mfi);
+	mfi_spin_unlock(mfi);
 	ret = usb_ep_queue(mfi->in_ep, mfi->write_req, GFP_ATOMIC);
-	mfi_lock(mfi);
+	mfi_spin_lock(mfi);
 
 	return ret;
 }
@@ -289,9 +292,9 @@ static inline int mfi_recv_async(struct f_mfi *mfi)
 	mfi->read_req->length = mfi->out_ep->maxpacket;
 
 	/* temporary unlock to avoid deadlock in complete callback */
-	mfi_unlock(mfi);
+	mfi_spin_unlock(mfi);
 	ret = usb_ep_queue(mfi->out_ep, mfi->read_req, GFP_ATOMIC);
-	mfi_lock(mfi);
+	mfi_spin_lock(mfi);
 
 	return ret;
 }
@@ -308,7 +311,7 @@ static __always_inline struct f_mfi *cdev_to_mfi(struct cdev *d)
 
 static __always_inline bool mfi_permission_denied(struct f_mfi *mfi)
 {
-	/* mfi->lock should be locked before calling this function */
+	/* mfi->mutex should be locked before calling this function */
 
 	return mfi->task != get_current();
 }
@@ -317,15 +320,15 @@ static int mfi_open(struct inode *inode, struct file *file)
 {
 	struct f_mfi *mfi = cdev_to_mfi(inode->i_cdev);
 
-	mfi_lock(mfi);
+	mutex_lock(&mfi->mutex);
 
 	if (unlikely(mfi->task)) {
-		mfi_unlock(mfi);
+		mutex_unlock(&mfi->mutex);
 		return -EBUSY;
 	}
 	mfi->task = get_current();
 
-	mfi_unlock(mfi);
+	mutex_unlock(&mfi->mutex);
 
 	mfi_dev_dbg(mfi, "/dev/mfi%d opened\n", mfi->minor);
 
@@ -336,15 +339,15 @@ static int mfi_release(struct inode *inode, struct file *file)
 {
 	struct f_mfi *mfi = cdev_to_mfi(inode->i_cdev);
 
-	mfi_lock(mfi);
+	mutex_lock(&mfi->mutex);
 
 	if (unlikely(mfi_permission_denied(mfi))) {
-		mfi_unlock(mfi);
+		mutex_unlock(&mfi->mutex);
 		return -EPERM;
 	}
 	mfi->task = NULL;
 
-	mfi_unlock(mfi);
+	mutex_unlock(&mfi->mutex);
 
 	mfi_dev_dbg(mfi, "/dev/mfi%d closed\n", mfi->minor);
 
@@ -357,27 +360,31 @@ static ssize_t mfi_read(struct file *file, char __user *buf, size_t len,
 	ssize_t ret = 0;
 	struct f_mfi *mfi = cdev_to_mfi(file->f_inode->i_cdev);
 
-	mfi_lock(mfi);
+	mutex_lock(&mfi->mutex);
 
 	if (unlikely(mfi_permission_denied(mfi))) {
-		mfi_unlock(mfi);
+		mutex_unlock(&mfi->mutex);
 		return -EPERM;
 	}
 	if (unlikely(!mfi->in_buf_cnt)) {
-		mfi_unlock(mfi);
+		mutex_unlock(&mfi->mutex);
 		return 0;
 	}
+
+	mfi_spin_lock(mfi);
 
 	if (unlikely(copy_to_user(buf, mfi->in_buf, mfi->in_buf_cnt))) {
 		mfi_dev_warn(mfi, "/dev/mfi%d: copy_to_user\n", mfi->minor);
 		ret = 0;
 	} else {
 		ret = (ssize_t)mfi->in_buf_cnt;
-		mfi->in_buf_cnt = 0;
-		mfi_recv_async(mfi);
 	}
 
-	mfi_unlock(mfi);
+	mfi->in_buf_cnt = 0;
+	mfi_recv_async(mfi);
+
+	mfi_spin_unlock(mfi);
+	mutex_unlock(&mfi->mutex);
 
 	mfi_dev_dbg(mfi, "/dev/mfi%d: read %d bytes\n", mfi->minor, (int)ret);
 
@@ -387,38 +394,46 @@ static ssize_t mfi_read(struct file *file, char __user *buf, size_t len,
 static ssize_t mfi_write(struct file *file, const char *buf, size_t len,
 			 loff_t *off)
 {
-	int err = 0;
+	int ret = 0;
 	struct f_mfi *mfi = cdev_to_mfi(file->f_inode->i_cdev);
 
-	mfi_lock(mfi);
+	mutex_lock(&mfi->mutex);
 
 	if (unlikely(mfi_permission_denied(mfi))) {
-		mfi_unlock(mfi);
+		mutex_unlock(&mfi->mutex);
 		return -EPERM;
 	}
 	if (unlikely(!len)) {
-		mfi_unlock(mfi);
-		return 0;
-	}
-	if (unlikely(copy_from_user(mfi->out_buf, buf, len))) {
-		mfi_dev_warn(mfi, "/dev/mfi%d: copy_from_user\n", mfi->minor);
-		mfi_unlock(mfi);
+		mutex_unlock(&mfi->mutex);
 		return 0;
 	}
 
+	mfi_spin_lock(mfi);
+
+	ret = copy_from_user(mfi->out_buf, buf, len);
+	if (unlikely(ret)) {
+		mfi_dev_warn(mfi, "/dev/mfi%d: copy_from_user, err = %d\n",
+			    mfi->minor, ret);
+		ret = 0;
+		goto mfi_write_exit;
+	}
 	mfi->out_buf_cnt = (int)len;
-	err = mfi_send_async(mfi);
-	if (unlikely(err)) {
-		mfi_dev_err(mfi, "/dev/mfi%d: mfi_send, err = %d\n", mfi->minor,
-			    err);
-		return 0;
+
+	ret = mfi_send_async(mfi);
+	if (unlikely(ret)) {
+		mfi_dev_err(mfi, "/dev/mfi%d: mfi_send, err = %d\n", mfi->minor, ret);
+		ret = 0;
+	} else {
+		ret = (int)len;
 	}
 
-	mfi_unlock(mfi);
+mfi_write_exit:
+	mfi_spin_unlock(mfi);
+	mutex_unlock(&mfi->mutex);
 
 	mfi_dev_dbg(mfi, "/dev/mfi%d: wrote %d bytes\n", mfi->minor, (int)len);
 
-	return len;
+	return ret;
 }
 
 static __poll_t mfi_poll(struct file *file, poll_table *wait)
@@ -426,28 +441,32 @@ static __poll_t mfi_poll(struct file *file, poll_table *wait)
 	__poll_t status = 0;
 	struct f_mfi *mfi = cdev_to_mfi(file->f_inode->i_cdev);
 
-	mfi_lock(mfi);
+	mutex_lock(&mfi->mutex);
+
 	if (unlikely(mfi_permission_denied(mfi))) {
 		status |= EPOLLERR;
-		mfi_unlock(mfi);
 		goto mfi_poll_exit;
 	}
+
+	mfi_spin_lock(mfi);
 	if (unlikely(mfi->in_buf_cnt)) {
 		status |= EPOLLIN;
-		mfi_unlock(mfi);
+		mfi_spin_unlock(mfi);
 		goto mfi_poll_exit;
 	}
-	mfi_unlock(mfi);
+	mfi_spin_unlock(mfi);
 
 	mfi_dev_vdbg(mfi, "mfi_poll: Waiting for event\n");
 	poll_wait(file, &mfi->in_wait, wait);
 
-	mfi_lock(mfi);
+	mfi_spin_lock(mfi);
 	if (likely(mfi->in_buf_cnt))
 		status |= EPOLLIN;
-	mfi_unlock(mfi);
+	mfi_spin_unlock(mfi);
 
 mfi_poll_exit:
+	mutex_unlock(&mfi->mutex);
+
 	mfi_dev_dbg(mfi, "/dev/mfi%d: poll status = %u\n", mfi->minor, status);
 
 	return status;
@@ -458,10 +477,10 @@ static long mfi_ioctl(struct file *file, unsigned int code, unsigned long arg)
 	long ret = -EINVAL;
 	struct f_mfi *mfi = cdev_to_mfi(file->f_inode->i_cdev);
 
-	mfi_lock(mfi);
+	mutex_lock(&mfi->mutex);
 
 	if (unlikely(mfi_permission_denied(mfi))) {
-		mfi_unlock(mfi);
+		mutex_unlock(&mfi->mutex);
 		return -EPERM;
 	}
 
@@ -471,7 +490,9 @@ static long mfi_ioctl(struct file *file, unsigned int code, unsigned long arg)
 	case IOCTL_GADGET_GET_MFI_IN_BUF_CNT:
 		mfi_dev_vdbg(mfi,
 			     "mfi_ioctl: IOCTL_GADGET_GET_MFI_IN_BUF_CNT\n");
+		mfi_spin_lock(mfi);
 		ret = mfi->in_buf_cnt;
+		mfi_spin_unlock(mfi);
 		break;
 	case IOCTL_GADGET_GET_MFI_MAX_PACKET_SIZE:
 		mfi_dev_vdbg(
@@ -481,7 +502,7 @@ static long mfi_ioctl(struct file *file, unsigned int code, unsigned long arg)
 		break;
 	}
 
-	mfi_unlock(mfi);
+	mutex_unlock(&mfi->mutex);
 
 	mfi_dev_dbg(mfi, "/dev/mfi%d: ioctl status = %ld\n", mfi->minor, ret);
 
@@ -584,7 +605,7 @@ static inline void mfi_chrdev_unregister_region(void)
 
 static inline int mfi_chrdev_register(struct f_mfi *mfi)
 {
-	/* mfi->lock should be locked before calling this function */
+	/* mfi->mutex should be locked before calling this function */
 
 	dev_t devt;
 	struct device *pdev;
@@ -632,7 +653,7 @@ static inline int mfi_chrdev_register(struct f_mfi *mfi)
 
 static inline void mfi_chrdev_unregister(struct f_mfi *mfi)
 {
-	/* mfi->lock should be locked before calling this function */
+	/* mfi->mutex should be locked before calling this function */
 
 	device_destroy(mfi_class, MKDEV(mfi_major, mfi->minor));
 	cdev_del(&mfi->cdev);
@@ -703,14 +724,18 @@ autoconf_fail:
 	if (unlikely(ret))
 		return ret;
 
+	mutex_init(&mfi->mutex);
 	spin_lock_init(&mfi->lock);
-	mfi_lock(mfi);
 
+	mfi_spin_lock(mfi);
+	mutex_lock(&mfi->mutex);
 	ret = mfi_chrdev_register(mfi);
 	if (unlikely(ret)) {
-		mfi_unlock(mfi);
+		mfi_spin_unlock(mfi);
+		mutex_unlock(&mfi->mutex);
 		return ret;
 	}
+	mutex_unlock(&mfi->mutex);
 
 	mfi->in_buf = kzalloc(mfi->out_ep->maxpacket_limit, GFP_KERNEL);
 	if (unlikely(NULL == mfi->in_buf))
@@ -724,7 +749,7 @@ autoconf_fail:
 
 	init_waitqueue_head(&mfi->in_wait);
 
-	mfi_unlock(mfi);
+	mfi_spin_unlock(mfi);
 
 	mfi_dev_dbg(mfi, "%s speed %s: IN/%s, OUT/%s\n",
 		    (gadget_is_superspeed(c->cdev->gadget) ?
@@ -736,8 +761,10 @@ autoconf_fail:
 	return ret;
 
 mfi_bind_chrdev:
+	mutex_lock(&mfi->mutex);
 	mfi_chrdev_unregister(mfi);
-	mfi_unlock(mfi);
+	mutex_unlock(&mfi->mutex);
+	mfi_spin_unlock(mfi);
 	return -ENOMEM;
 }
 
@@ -745,35 +772,37 @@ static void mfi_free_func(struct usb_function *f)
 {
 	struct f_mfi *mfi = func_to_mfi(f);
 
-	mfi_lock(mfi);
+	mfi_spin_lock(mfi);
 	if (likely(mfi->in_buf))
 		kfree(mfi->in_buf);
 	if (likely(mfi->out_buf))
 		kfree(mfi->out_buf);
+	mutex_lock(&mfi->mutex);
 	mfi_chrdev_unregister(mfi);
-	mfi_unlock(mfi);
+	mutex_unlock(&mfi->mutex);
+	mutex_destroy(&mfi->mutex);
+	mfi_spin_unlock(mfi);
 	usb_free_all_descriptors(f);
 	kfree(mfi);
 }
 
 static inline void disable_mfi(struct f_mfi *mfi)
 {
-	mfi_lock(mfi);
+	mfi_spin_lock(mfi);
 	mfi_free_req(mfi->read_req, mfi->out_ep);
 	mfi_free_req(mfi->write_req, mfi->in_ep);
 	usb_ep_disable(mfi->in_ep);
 	usb_ep_disable(mfi->out_ep);
-	mfi_unlock(mfi);
+	mfi_spin_unlock(mfi);
 }
 
 static void mfi_complete(struct usb_ep *ep, struct usb_request *req)
 {
 	struct f_mfi *mfi = req->context;
 
-	mfi_lock(mfi);
-
 	switch (req->status) {
 	case 0:
+		mfi_spin_lock(mfi);
 		if (ep == mfi->out_ep) {
 			mfi_dev_dbg(mfi, "mfi_complete: received %d bytes\n",
 				    req->actual);
@@ -788,6 +817,7 @@ static void mfi_complete(struct usb_ep *ep, struct usb_request *req)
 			mfi_free_req(mfi->write_req, ep);
 			mfi->write_req = NULL;
 		}
+		mfi_spin_unlock(mfi);
 		break;
 
 	default:
@@ -801,8 +831,6 @@ static void mfi_complete(struct usb_ep *ep, struct usb_request *req)
 		disable_mfi(mfi);
 		break;
 	}
-
-	mfi_unlock(mfi);
 }
 
 static inline int enable_endpoint(struct usb_composite_dev *cdev,
@@ -817,26 +845,31 @@ static inline int enable_endpoint(struct usb_composite_dev *cdev,
 
 static inline int enable_mfi(struct usb_composite_dev *cdev, struct f_mfi *mfi)
 {
-	int ret = enable_endpoint(cdev, mfi, mfi->in_ep);
+	int ret = 0;
+
+	mfi_spin_lock(mfi);
+
+	ret = enable_endpoint(cdev, mfi, mfi->in_ep);
 	if (unlikely(ret))
-		return ret;
+		goto enable_mfi_exit;
 
 	ret = enable_endpoint(cdev, mfi, mfi->out_ep);
 	if (unlikely(ret)) {
 		usb_ep_disable(mfi->in_ep);
-		return ret;
+		goto enable_mfi_exit;
 	}
 
-	mfi_lock(mfi);
 	ret = mfi_recv_async(mfi);
 	if (unlikely(ret))
 		mfi_dev_warn(
 			mfi,
 			"enable_mfi: Failed to initiate data receiving, err = %d\n",
 			ret);
-	mfi_unlock(mfi);
 
-	return 0;
+enable_mfi_exit:
+	mfi_spin_unlock(mfi);
+
+	return ret;
 }
 
 static int mfi_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
