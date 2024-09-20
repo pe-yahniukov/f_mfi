@@ -1,13 +1,13 @@
-From e4eede5f7a1f2aebdde0d33461dcf5869c3ea442 Mon Sep 17 00:00:00 2001
+From 44eac0136cbe03a8e8db711b031fc707c7ba71b0 Mon Sep 17 00:00:00 2001
 From: Stanislav Yahniukov <pe@yahniukov.com>
-Date: Thu, 19 Sep 2024 12:26:58 +0300
+Date: Fri, 20 Sep 2024 15:09:58 +0300
 Subject: [PATCH] drivers: usb: gadget: function: MFi interface gadget function
 
 ---
  drivers/usb/gadget/Kconfig           |  43 ++
  drivers/usb/gadget/function/Makefile |   2 +
- drivers/usb/gadget/function/f_mfi.c  | 929 +++++++++++++++++++++++++++
- 3 files changed, 974 insertions(+)
+ drivers/usb/gadget/function/f_mfi.c  | 965 +++++++++++++++++++++++++++
+ 3 files changed, 1010 insertions(+)
  create mode 100644 drivers/usb/gadget/function/f_mfi.c
 
 diff --git a/drivers/usb/gadget/Kconfig b/drivers/usb/gadget/Kconfig
@@ -83,10 +83,10 @@ index 5d3a6cf02..295bac031 100644
 +obj-$(CONFIG_USB_F_MFI)		+= usb_f_mfi.o
 diff --git a/drivers/usb/gadget/function/f_mfi.c b/drivers/usb/gadget/function/f_mfi.c
 new file mode 100644
-index 000000000..70ca002a6
+index 000000000..46ff572d7
 --- /dev/null
 +++ b/drivers/usb/gadget/function/f_mfi.c
-@@ -0,0 +1,929 @@
+@@ -0,0 +1,965 @@
 +// SPDX-License-Identifier: (GPL-2.0 OR MIT)
 +/*
 + * f_mfi.c - USB interface driver for MFi accessory
@@ -140,9 +140,6 @@ index 000000000..70ca002a6
 +	struct usb_request *read_req;
 +	struct usb_request *write_req;
 +
-+	spinlock_t lock;
-+	unsigned long flags;
-+
 +	u8 *in_buf;
 +	int in_buf_cnt;
 +	wait_queue_head_t in_wait;
@@ -153,6 +150,12 @@ index 000000000..70ca002a6
 +	int minor;
 +	struct cdev cdev;
 +	struct task_struct *task;
++
++	/* for in_buf, out_buf access control */
++	spinlock_t lock;
++	unsigned long flags;
++	/* for file operations access control */
++	struct mutex mutex;
 +};
 +
 +struct f_mfi_opts {
@@ -164,12 +167,12 @@ index 000000000..70ca002a6
 +	return container_of(f, struct f_mfi, function);
 +}
 +
-+static __always_inline void mfi_lock(struct f_mfi *mfi)
++static __always_inline void mfi_spin_lock(struct f_mfi *mfi)
 +{
 +	spin_lock_irqsave(&mfi->lock, mfi->flags);
 +}
 +
-+static __always_inline void mfi_unlock(struct f_mfi *mfi)
++static __always_inline void mfi_spin_unlock(struct f_mfi *mfi)
 +{
 +	spin_unlock_irqrestore(&mfi->lock, mfi->flags);
 +}
@@ -195,10 +198,10 @@ index 000000000..70ca002a6
 +/*-------------------------------------------------------------------------*/
 +
 +static struct usb_interface_descriptor mfi_intf = {
-+	.bLength = sizeof(mfi_intf),
-+	.bDescriptorType = USB_DT_INTERFACE,
-+	.bNumEndpoints = 2,
-+	.bInterfaceClass = USB_CLASS_VENDOR_SPEC,
++	.bLength            = sizeof(mfi_intf),
++	.bDescriptorType    = USB_DT_INTERFACE,
++	.bNumEndpoints      = 2,
++	.bInterfaceClass    = USB_CLASS_VENDOR_SPEC,
 +	.bInterfaceSubClass = 0xF0, /* MFi accessory */
 +	.bInterfaceProtocol = 0x00,
 +};
@@ -206,17 +209,17 @@ index 000000000..70ca002a6
 +/* full speed support: */
 +
 +static struct usb_endpoint_descriptor fs_mfi_source_desc = {
-+	.bLength = USB_DT_ENDPOINT_SIZE,
-+	.bDescriptorType = USB_DT_ENDPOINT,
++	.bLength          = USB_DT_ENDPOINT_SIZE,
++	.bDescriptorType  = USB_DT_ENDPOINT,
 +	.bEndpointAddress = USB_DIR_IN,
-+	.bmAttributes = USB_ENDPOINT_XFER_BULK,
++	.bmAttributes     = USB_ENDPOINT_XFER_BULK,
 +};
 +
 +static struct usb_endpoint_descriptor fs_mfi_sink_desc = {
-+	.bLength = USB_DT_ENDPOINT_SIZE,
-+	.bDescriptorType = USB_DT_ENDPOINT,
++	.bLength          = USB_DT_ENDPOINT_SIZE,
++	.bDescriptorType  = USB_DT_ENDPOINT,
 +	.bEndpointAddress = USB_DIR_OUT,
-+	.bmAttributes = USB_ENDPOINT_XFER_BULK,
++	.bmAttributes     = USB_ENDPOINT_XFER_BULK,
 +};
 +
 +static struct usb_descriptor_header *fs_mfi_descs[] = {
@@ -229,17 +232,17 @@ index 000000000..70ca002a6
 +/* high speed support: */
 +
 +static struct usb_endpoint_descriptor hs_mfi_source_desc = {
-+	.bLength = USB_DT_ENDPOINT_SIZE,
++	.bLength         = USB_DT_ENDPOINT_SIZE,
 +	.bDescriptorType = USB_DT_ENDPOINT,
-+	.bmAttributes = USB_ENDPOINT_XFER_BULK,
-+	.wMaxPacketSize = cpu_to_le16(512),
++	.bmAttributes    = USB_ENDPOINT_XFER_BULK,
++	.wMaxPacketSize  = cpu_to_le16(512),
 +};
 +
 +static struct usb_endpoint_descriptor hs_mfi_sink_desc = {
-+	.bLength = USB_DT_ENDPOINT_SIZE,
++	.bLength         = USB_DT_ENDPOINT_SIZE,
 +	.bDescriptorType = USB_DT_ENDPOINT,
-+	.bmAttributes = USB_ENDPOINT_XFER_BULK,
-+	.wMaxPacketSize = cpu_to_le16(512),
++	.bmAttributes    = USB_ENDPOINT_XFER_BULK,
++	.wMaxPacketSize  = cpu_to_le16(512),
 +};
 +
 +static struct usb_descriptor_header *hs_mfi_descs[] = {
@@ -252,32 +255,32 @@ index 000000000..70ca002a6
 +/* super speed support: */
 +
 +static struct usb_endpoint_descriptor ss_mfi_source_desc = {
-+	.bLength = USB_DT_ENDPOINT_SIZE,
++	.bLength         = USB_DT_ENDPOINT_SIZE,
 +	.bDescriptorType = USB_DT_ENDPOINT,
-+	.bmAttributes = USB_ENDPOINT_XFER_BULK,
-+	.wMaxPacketSize = cpu_to_le16(1024),
++	.bmAttributes    = USB_ENDPOINT_XFER_BULK,
++	.wMaxPacketSize  = cpu_to_le16(1024),
 +};
 +
 +static struct usb_ss_ep_comp_descriptor ss_mfi_source_comp_desc = {
-+	.bLength = USB_DT_SS_EP_COMP_SIZE,
-+	.bDescriptorType = USB_DT_SS_ENDPOINT_COMP,
-+	.bMaxBurst = 0,
-+	.bmAttributes = 0,
++	.bLength           = USB_DT_SS_EP_COMP_SIZE,
++	.bDescriptorType   = USB_DT_SS_ENDPOINT_COMP,
++	.bMaxBurst         = 0,
++	.bmAttributes      = 0,
 +	.wBytesPerInterval = 0,
 +};
 +
 +static struct usb_endpoint_descriptor ss_mfi_sink_desc = {
-+	.bLength = USB_DT_ENDPOINT_SIZE,
++	.bLength         = USB_DT_ENDPOINT_SIZE,
 +	.bDescriptorType = USB_DT_ENDPOINT,
-+	.bmAttributes = USB_ENDPOINT_XFER_BULK,
-+	.wMaxPacketSize = cpu_to_le16(1024),
++	.bmAttributes    = USB_ENDPOINT_XFER_BULK,
++	.wMaxPacketSize  = cpu_to_le16(1024),
 +};
 +
 +static struct usb_ss_ep_comp_descriptor ss_mfi_sink_comp_desc = {
-+	.bLength = USB_DT_SS_EP_COMP_SIZE,
-+	.bDescriptorType = USB_DT_SS_ENDPOINT_COMP,
-+	.bMaxBurst = 0,
-+	.bmAttributes = 0,
++	.bLength           = USB_DT_SS_EP_COMP_SIZE,
++	.bDescriptorType   = USB_DT_SS_ENDPOINT_COMP,
++	.bMaxBurst         = 0,
++	.bmAttributes      = 0,
 +	.wBytesPerInterval = 0,
 +};
 +
@@ -300,7 +303,7 @@ index 000000000..70ca002a6
 +
 +static struct usb_gadget_strings stringtab_mfi = {
 +	.language = 0x0409, /* en-us */
-+	.strings = strings_mfi,
++	.strings  = strings_mfi,
 +};
 +
 +static struct usb_gadget_strings *mfi_strings[] = {
@@ -312,7 +315,7 @@ index 000000000..70ca002a6
 +
 +static void mfi_complete(struct usb_ep *ep, struct usb_request *req);
 +
-+static inline struct usb_request *mfi_alloc_req(struct usb_ep *ep)
++static struct usb_request *mfi_alloc_req(struct usb_ep *ep)
 +{
 +	struct usb_request *req = usb_ep_alloc_request(ep, GFP_ATOMIC);
 +	if (unlikely(NULL == req))
@@ -325,7 +328,7 @@ index 000000000..70ca002a6
 +	return req;
 +}
 +
-+static inline void mfi_free_req(struct usb_request *req, struct usb_ep *ep)
++static void mfi_free_req(struct usb_request *req, struct usb_ep *ep)
 +{
 +	if (likely(req)) {
 +		if (likely(req->buf))
@@ -334,53 +337,53 @@ index 000000000..70ca002a6
 +	}
 +}
 +
-+static inline int mfi_send_async(struct f_mfi *mfi)
++static int mfi_send_async(struct f_mfi *mfi)
 +{
 +	/* mfi->lock should be locked before calling this function */
 +
 +	int ret = 0;
 +
-+	if (unlikely(mfi->write_req))
++	if (mfi->write_req)
 +		return -EBUSY;
 +
 +	mfi->write_req = mfi_alloc_req(mfi->in_ep);
 +	if (unlikely(NULL == mfi->write_req))
 +		return -ENOMEM;
 +
-+	mfi->write_req->context = mfi;
++	mfi->write_req->context  = mfi;
 +	mfi->write_req->complete = mfi_complete;
-+	mfi->write_req->length = mfi->out_buf_cnt;
++	mfi->write_req->length   = mfi->out_buf_cnt;
 +	memcpy(mfi->write_req->buf, mfi->out_buf, mfi->out_buf_cnt);
 +
 +	/* temporary unlock to avoid deadlock in complete callback */
-+	mfi_unlock(mfi);
++	mfi_spin_unlock(mfi);
 +	ret = usb_ep_queue(mfi->in_ep, mfi->write_req, GFP_ATOMIC);
-+	mfi_lock(mfi);
++	mfi_spin_lock(mfi);
 +
 +	return ret;
 +}
 +
-+static inline int mfi_recv_async(struct f_mfi *mfi)
++static int mfi_recv_async(struct f_mfi *mfi)
 +{
 +	/* mfi->lock should be locked before calling this function */
 +
 +	int ret = 0;
 +
-+	if (unlikely(mfi->read_req))
++	if (mfi->read_req)
 +		return -EBUSY;
 +
 +	mfi->read_req = mfi_alloc_req(mfi->out_ep);
 +	if (unlikely(NULL == mfi->read_req))
 +		return -ENOMEM;
 +
-+	mfi->read_req->context = mfi;
++	mfi->read_req->context  = mfi;
 +	mfi->read_req->complete = mfi_complete;
-+	mfi->read_req->length = mfi->out_ep->maxpacket;
++	mfi->read_req->length   = mfi->out_ep->maxpacket;
 +
 +	/* temporary unlock to avoid deadlock in complete callback */
-+	mfi_unlock(mfi);
++	mfi_spin_unlock(mfi);
 +	ret = usb_ep_queue(mfi->out_ep, mfi->read_req, GFP_ATOMIC);
-+	mfi_lock(mfi);
++	mfi_spin_lock(mfi);
 +
 +	return ret;
 +}
@@ -397,7 +400,7 @@ index 000000000..70ca002a6
 +
 +static __always_inline bool mfi_permission_denied(struct f_mfi *mfi)
 +{
-+	/* mfi->lock should be locked before calling this function */
++	/* mfi->mutex should be locked before calling this function */
 +
 +	return mfi->task != get_current();
 +}
@@ -406,15 +409,15 @@ index 000000000..70ca002a6
 +{
 +	struct f_mfi *mfi = cdev_to_mfi(inode->i_cdev);
 +
-+	mfi_lock(mfi);
++	mutex_lock(&mfi->mutex);
 +
-+	if (unlikely(mfi->task)) {
-+		mfi_unlock(mfi);
++	if (mfi->task) {
++		mutex_unlock(&mfi->mutex);
 +		return -EBUSY;
 +	}
 +	mfi->task = get_current();
 +
-+	mfi_unlock(mfi);
++	mutex_unlock(&mfi->mutex);
 +
 +	mfi_dev_dbg(mfi, "/dev/mfi%d opened\n", mfi->minor);
 +
@@ -425,15 +428,15 @@ index 000000000..70ca002a6
 +{
 +	struct f_mfi *mfi = cdev_to_mfi(inode->i_cdev);
 +
-+	mfi_lock(mfi);
++	mutex_lock(&mfi->mutex);
 +
-+	if (unlikely(mfi_permission_denied(mfi))) {
-+		mfi_unlock(mfi);
++	if (mfi_permission_denied(mfi)) {
++		mutex_unlock(&mfi->mutex);
 +		return -EPERM;
 +	}
 +	mfi->task = NULL;
 +
-+	mfi_unlock(mfi);
++	mutex_unlock(&mfi->mutex);
 +
 +	mfi_dev_dbg(mfi, "/dev/mfi%d closed\n", mfi->minor);
 +
@@ -446,27 +449,31 @@ index 000000000..70ca002a6
 +	ssize_t ret = 0;
 +	struct f_mfi *mfi = cdev_to_mfi(file->f_inode->i_cdev);
 +
-+	mfi_lock(mfi);
++	mutex_lock(&mfi->mutex);
 +
-+	if (unlikely(mfi_permission_denied(mfi))) {
-+		mfi_unlock(mfi);
++	if (mfi_permission_denied(mfi)) {
++		mutex_unlock(&mfi->mutex);
 +		return -EPERM;
 +	}
-+	if (unlikely(!mfi->in_buf_cnt)) {
-+		mfi_unlock(mfi);
++	if (!mfi->in_buf_cnt) {
++		mutex_unlock(&mfi->mutex);
 +		return 0;
 +	}
++
++	mfi_spin_lock(mfi);
 +
 +	if (unlikely(copy_to_user(buf, mfi->in_buf, mfi->in_buf_cnt))) {
 +		mfi_dev_warn(mfi, "/dev/mfi%d: copy_to_user\n", mfi->minor);
 +		ret = 0;
 +	} else {
 +		ret = (ssize_t)mfi->in_buf_cnt;
-+		mfi->in_buf_cnt = 0;
-+		mfi_recv_async(mfi);
 +	}
 +
-+	mfi_unlock(mfi);
++	mfi->in_buf_cnt = 0;
++	mfi_recv_async(mfi);
++
++	mfi_spin_unlock(mfi);
++	mutex_unlock(&mfi->mutex);
 +
 +	mfi_dev_dbg(mfi, "/dev/mfi%d: read %d bytes\n", mfi->minor, (int)ret);
 +
@@ -476,38 +483,47 @@ index 000000000..70ca002a6
 +static ssize_t mfi_write(struct file *file, const char *buf, size_t len,
 +			 loff_t *off)
 +{
-+	int err = 0;
++	int ret = 0;
 +	struct f_mfi *mfi = cdev_to_mfi(file->f_inode->i_cdev);
 +
-+	mfi_lock(mfi);
++	mutex_lock(&mfi->mutex);
 +
-+	if (unlikely(mfi_permission_denied(mfi))) {
-+		mfi_unlock(mfi);
++	if (mfi_permission_denied(mfi)) {
++		mutex_unlock(&mfi->mutex);
 +		return -EPERM;
 +	}
-+	if (unlikely(!len)) {
-+		mfi_unlock(mfi);
-+		return 0;
-+	}
-+	if (unlikely(copy_from_user(mfi->out_buf, buf, len))) {
-+		mfi_dev_warn(mfi, "/dev/mfi%d: copy_from_user\n", mfi->minor);
-+		mfi_unlock(mfi);
++	if (!len) {
++		mutex_unlock(&mfi->mutex);
 +		return 0;
 +	}
 +
++	mfi_spin_lock(mfi);
++
++	ret = copy_from_user(mfi->out_buf, buf, len);
++	if (unlikely(ret)) {
++		mfi_dev_warn(mfi, "/dev/mfi%d: copy_from_user, err = %d\n",
++			     mfi->minor, ret);
++		ret = 0;
++		goto mfi_write_exit;
++	}
 +	mfi->out_buf_cnt = (int)len;
-+	err = mfi_send_async(mfi);
-+	if (unlikely(err)) {
++
++	ret = mfi_send_async(mfi);
++	if (unlikely(ret)) {
 +		mfi_dev_err(mfi, "/dev/mfi%d: mfi_send, err = %d\n", mfi->minor,
-+			    err);
-+		return 0;
++			    ret);
++		ret = 0;
++	} else {
++		ret = (int)len;
 +	}
 +
-+	mfi_unlock(mfi);
++mfi_write_exit:
++	mfi_spin_unlock(mfi);
++	mutex_unlock(&mfi->mutex);
 +
 +	mfi_dev_dbg(mfi, "/dev/mfi%d: wrote %d bytes\n", mfi->minor, (int)len);
 +
-+	return len;
++	return ret;
 +}
 +
 +static __poll_t mfi_poll(struct file *file, poll_table *wait)
@@ -515,28 +531,32 @@ index 000000000..70ca002a6
 +	__poll_t status = 0;
 +	struct f_mfi *mfi = cdev_to_mfi(file->f_inode->i_cdev);
 +
-+	mfi_lock(mfi);
-+	if (unlikely(mfi_permission_denied(mfi))) {
++	mutex_lock(&mfi->mutex);
++
++	if (mfi_permission_denied(mfi)) {
 +		status |= EPOLLERR;
-+		mfi_unlock(mfi);
 +		goto mfi_poll_exit;
 +	}
-+	if (unlikely(mfi->in_buf_cnt)) {
++
++	mfi_spin_lock(mfi);
++	if (mfi->in_buf_cnt) {
 +		status |= EPOLLIN;
-+		mfi_unlock(mfi);
++		mfi_spin_unlock(mfi);
 +		goto mfi_poll_exit;
 +	}
-+	mfi_unlock(mfi);
++	mfi_spin_unlock(mfi);
 +
 +	mfi_dev_vdbg(mfi, "mfi_poll: Waiting for event\n");
 +	poll_wait(file, &mfi->in_wait, wait);
 +
-+	mfi_lock(mfi);
++	mfi_spin_lock(mfi);
 +	if (likely(mfi->in_buf_cnt))
 +		status |= EPOLLIN;
-+	mfi_unlock(mfi);
++	mfi_spin_unlock(mfi);
 +
 +mfi_poll_exit:
++	mutex_unlock(&mfi->mutex);
++
 +	mfi_dev_dbg(mfi, "/dev/mfi%d: poll status = %u\n", mfi->minor, status);
 +
 +	return status;
@@ -547,10 +567,10 @@ index 000000000..70ca002a6
 +	long ret = -EINVAL;
 +	struct f_mfi *mfi = cdev_to_mfi(file->f_inode->i_cdev);
 +
-+	mfi_lock(mfi);
++	mutex_lock(&mfi->mutex);
 +
-+	if (unlikely(mfi_permission_denied(mfi))) {
-+		mfi_unlock(mfi);
++	if (mfi_permission_denied(mfi)) {
++		mutex_unlock(&mfi->mutex);
 +		return -EPERM;
 +	}
 +
@@ -560,7 +580,9 @@ index 000000000..70ca002a6
 +	case IOCTL_GADGET_GET_MFI_IN_BUF_CNT:
 +		mfi_dev_vdbg(mfi,
 +			     "mfi_ioctl: IOCTL_GADGET_GET_MFI_IN_BUF_CNT\n");
++		mfi_spin_lock(mfi);
 +		ret = mfi->in_buf_cnt;
++		mfi_spin_unlock(mfi);
 +		break;
 +	case IOCTL_GADGET_GET_MFI_MAX_PACKET_SIZE:
 +		mfi_dev_vdbg(
@@ -570,7 +592,7 @@ index 000000000..70ca002a6
 +		break;
 +	}
 +
-+	mfi_unlock(mfi);
++	mutex_unlock(&mfi->mutex);
 +
 +	mfi_dev_dbg(mfi, "/dev/mfi%d: ioctl status = %ld\n", mfi->minor, ret);
 +
@@ -578,12 +600,12 @@ index 000000000..70ca002a6
 +}
 +
 +static struct file_operations mfi_fops = {
-+	.owner = THIS_MODULE,
-+	.open = mfi_open,
-+	.release = mfi_release,
-+	.read = mfi_read,
-+	.write = mfi_write,
-+	.poll = mfi_poll,
++	.owner          = THIS_MODULE,
++	.open           = mfi_open,
++	.release        = mfi_release,
++	.read           = mfi_read,
++	.write          = mfi_write,
++	.poll           = mfi_poll,
 +	.unlocked_ioctl = mfi_ioctl,
 +};
 +
@@ -597,7 +619,7 @@ index 000000000..70ca002a6
 +static bool region_registered = false;
 +static bool mfi_interfaces_minors[MAX_MFI_INTERFACES];
 +
-+static inline int mfi_get_first_available_minor(void)
++static int mfi_get_first_available_minor(void)
 +{
 +	int i;
 +	for (i = 0; i < MAX_MFI_INTERFACES; ++i) {
@@ -627,7 +649,7 @@ index 000000000..70ca002a6
 +	int err;
 +	dev_t dev = 0;
 +
-+	if (unlikely(region_registered))
++	if (region_registered)
 +		return 0;
 +
 +	mfi_class = class_create(THIS_MODULE, "mfi");
@@ -654,7 +676,7 @@ index 000000000..70ca002a6
 +
 +static inline void mfi_chrdev_unregister_region(void)
 +{
-+	if (unlikely(!region_registered))
++	if (!region_registered)
 +		return;
 +
 +	if (likely(mfi_major)) {
@@ -673,7 +695,7 @@ index 000000000..70ca002a6
 +
 +static inline int mfi_chrdev_register(struct f_mfi *mfi)
 +{
-+	/* mfi->lock should be locked before calling this function */
++	/* mfi->mutex should be locked before calling this function */
 +
 +	dev_t devt;
 +	struct device *pdev;
@@ -687,9 +709,10 @@ index 000000000..70ca002a6
 +		return err;
 +	}
 +
-+	devt = MKDEV(mfi_major, mfi_get_first_available_minor());
-+	pdev = device_create(mfi_class, NULL, devt, NULL, "mfi%d",
-+			     mfi_interfaces_cnt);
++	mfi->minor = mfi_get_first_available_minor();
++	devt       = MKDEV(mfi_major, mfi->minor);
++
++	pdev = device_create(mfi_class, NULL, devt, NULL, "mfi%d", mfi->minor);
 +	if (unlikely(IS_ERR(pdev))) {
 +		mfi_dev_err(mfi, "mfi_chrdev_register: device_create\n");
 +		return PTR_ERR(pdev);
@@ -702,6 +725,7 @@ index 000000000..70ca002a6
 +
 +	cdev_init(&mfi->cdev, &mfi_fops);
 +	mfi->cdev.owner = THIS_MODULE;
++
 +	err = cdev_add(&mfi->cdev, devt, 1);
 +	if (unlikely(err)) {
 +		mfi_dev_err(mfi, "mfi_chrdev_register: cdev_add, err = %d\n",
@@ -720,7 +744,7 @@ index 000000000..70ca002a6
 +
 +static inline void mfi_chrdev_unregister(struct f_mfi *mfi)
 +{
-+	/* mfi->lock should be locked before calling this function */
++	/* mfi->mutex should be locked before calling this function */
 +
 +	device_destroy(mfi_class, MKDEV(mfi_major, mfi->minor));
 +	cdev_del(&mfi->cdev);
@@ -791,14 +815,18 @@ index 000000000..70ca002a6
 +	if (unlikely(ret))
 +		return ret;
 +
++	mutex_init(&mfi->mutex);
 +	spin_lock_init(&mfi->lock);
-+	mfi_lock(mfi);
 +
++	mfi_spin_lock(mfi);
++	mutex_lock(&mfi->mutex);
 +	ret = mfi_chrdev_register(mfi);
 +	if (unlikely(ret)) {
-+		mfi_unlock(mfi);
++		mfi_spin_unlock(mfi);
++		mutex_unlock(&mfi->mutex);
 +		return ret;
 +	}
++	mutex_unlock(&mfi->mutex);
 +
 +	mfi->in_buf = kzalloc(mfi->out_ep->maxpacket_limit, GFP_KERNEL);
 +	if (unlikely(NULL == mfi->in_buf))
@@ -812,7 +840,7 @@ index 000000000..70ca002a6
 +
 +	init_waitqueue_head(&mfi->in_wait);
 +
-+	mfi_unlock(mfi);
++	mfi_spin_unlock(mfi);
 +
 +	mfi_dev_dbg(mfi, "%s speed %s: IN/%s, OUT/%s\n",
 +		    (gadget_is_superspeed(c->cdev->gadget) ?
@@ -824,8 +852,10 @@ index 000000000..70ca002a6
 +	return ret;
 +
 +mfi_bind_chrdev:
++	mutex_lock(&mfi->mutex);
 +	mfi_chrdev_unregister(mfi);
-+	mfi_unlock(mfi);
++	mutex_unlock(&mfi->mutex);
++	mfi_spin_unlock(mfi);
 +	return -ENOMEM;
 +}
 +
@@ -833,35 +863,37 @@ index 000000000..70ca002a6
 +{
 +	struct f_mfi *mfi = func_to_mfi(f);
 +
-+	mfi_lock(mfi);
++	mfi_spin_lock(mfi);
 +	if (likely(mfi->in_buf))
 +		kfree(mfi->in_buf);
 +	if (likely(mfi->out_buf))
 +		kfree(mfi->out_buf);
++	mutex_lock(&mfi->mutex);
 +	mfi_chrdev_unregister(mfi);
-+	mfi_unlock(mfi);
++	mutex_unlock(&mfi->mutex);
++	mutex_destroy(&mfi->mutex);
++	mfi_spin_unlock(mfi);
 +	usb_free_all_descriptors(f);
 +	kfree(mfi);
 +}
 +
-+static inline void disable_mfi(struct f_mfi *mfi)
++static void disable_mfi(struct f_mfi *mfi)
 +{
-+	mfi_lock(mfi);
++	mfi_spin_lock(mfi);
 +	mfi_free_req(mfi->read_req, mfi->out_ep);
 +	mfi_free_req(mfi->write_req, mfi->in_ep);
 +	usb_ep_disable(mfi->in_ep);
 +	usb_ep_disable(mfi->out_ep);
-+	mfi_unlock(mfi);
++	mfi_spin_unlock(mfi);
 +}
 +
 +static void mfi_complete(struct usb_ep *ep, struct usb_request *req)
 +{
 +	struct f_mfi *mfi = req->context;
 +
-+	mfi_lock(mfi);
-+
 +	switch (req->status) {
 +	case 0:
++		mfi_spin_lock(mfi);
 +		if (ep == mfi->out_ep) {
 +			mfi_dev_dbg(mfi, "mfi_complete: received %d bytes\n",
 +				    req->actual);
@@ -876,6 +908,7 @@ index 000000000..70ca002a6
 +			mfi_free_req(mfi->write_req, ep);
 +			mfi->write_req = NULL;
 +		}
++		mfi_spin_unlock(mfi);
 +		break;
 +
 +	default:
@@ -889,8 +922,6 @@ index 000000000..70ca002a6
 +		disable_mfi(mfi);
 +		break;
 +	}
-+
-+	mfi_unlock(mfi);
 +}
 +
 +static inline int enable_endpoint(struct usb_composite_dev *cdev,
@@ -903,28 +934,33 @@ index 000000000..70ca002a6
 +	return usb_ep_enable(ep);
 +}
 +
-+static inline int enable_mfi(struct usb_composite_dev *cdev, struct f_mfi *mfi)
++static int enable_mfi(struct usb_composite_dev *cdev, struct f_mfi *mfi)
 +{
-+	int ret = enable_endpoint(cdev, mfi, mfi->in_ep);
++	int ret = 0;
++
++	mfi_spin_lock(mfi);
++
++	ret = enable_endpoint(cdev, mfi, mfi->in_ep);
 +	if (unlikely(ret))
-+		return ret;
++		goto enable_mfi_exit;
 +
 +	ret = enable_endpoint(cdev, mfi, mfi->out_ep);
 +	if (unlikely(ret)) {
 +		usb_ep_disable(mfi->in_ep);
-+		return ret;
++		goto enable_mfi_exit;
 +	}
 +
-+	mfi_lock(mfi);
 +	ret = mfi_recv_async(mfi);
 +	if (unlikely(ret))
 +		mfi_dev_warn(
 +			mfi,
 +			"enable_mfi: Failed to initiate data receiving, err = %d\n",
 +			ret);
-+	mfi_unlock(mfi);
 +
-+	return 0;
++enable_mfi_exit:
++	mfi_spin_unlock(mfi);
++
++	return ret;
 +}
 +
 +static int mfi_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
@@ -951,11 +987,11 @@ index 000000000..70ca002a6
 +	if (unlikely(!mfi))
 +		return ERR_PTR(-ENOMEM);
 +
-+	mfi->function.name = "mfi";
-+	mfi->function.bind = mfi_bind;
-+	mfi->function.set_alt = mfi_set_alt;
-+	mfi->function.disable = mfi_disable;
-+	mfi->function.strings = mfi_strings;
++	mfi->function.name      = "mfi";
++	mfi->function.bind      = mfi_bind;
++	mfi->function.set_alt   = mfi_set_alt;
++	mfi->function.disable   = mfi_disable;
++	mfi->function.strings   = mfi_strings;
 +	mfi->function.free_func = mfi_free_func;
 +
 +	return &mfi->function;
@@ -979,8 +1015,8 @@ index 000000000..70ca002a6
 +
 +static const struct config_item_type mfi_func_type = {
 +	.ct_item_ops = &mfi_item_ops,
-+	.ct_attrs = mfi_attrs,
-+	.ct_owner = THIS_MODULE,
++	.ct_attrs    = mfi_attrs,
++	.ct_owner    = THIS_MODULE,
 +};
 +
 +static void mfi_free_instance(struct usb_function_instance *fi)
@@ -994,7 +1030,7 @@ index 000000000..70ca002a6
 +{
 +	struct f_mfi_opts *mfi_opts = NULL;
 +
-+	if (unlikely(mfi_interfaces_limit_reached())) {
++	if (mfi_interfaces_limit_reached()) {
 +		pr_err("f_mfi: Limit of MFi interfaces count (=%d) was reached\n",
 +		       MAX_MFI_INTERFACES);
 +		return ERR_PTR(-ENOMEM);
