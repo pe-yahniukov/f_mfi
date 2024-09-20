@@ -109,10 +109,10 @@ static __always_inline struct device *get_mfi_dev(struct f_mfi *mfi)
 /*-------------------------------------------------------------------------*/
 
 static struct usb_interface_descriptor mfi_intf = {
-	.bLength = sizeof(mfi_intf),
-	.bDescriptorType = USB_DT_INTERFACE,
-	.bNumEndpoints = 2,
-	.bInterfaceClass = USB_CLASS_VENDOR_SPEC,
+	.bLength            = sizeof(mfi_intf),
+	.bDescriptorType    = USB_DT_INTERFACE,
+	.bNumEndpoints      = 2,
+	.bInterfaceClass    = USB_CLASS_VENDOR_SPEC,
 	.bInterfaceSubClass = 0xF0, /* MFi accessory */
 	.bInterfaceProtocol = 0x00,
 };
@@ -120,17 +120,17 @@ static struct usb_interface_descriptor mfi_intf = {
 /* full speed support: */
 
 static struct usb_endpoint_descriptor fs_mfi_source_desc = {
-	.bLength = USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType = USB_DT_ENDPOINT,
+	.bLength          = USB_DT_ENDPOINT_SIZE,
+	.bDescriptorType  = USB_DT_ENDPOINT,
 	.bEndpointAddress = USB_DIR_IN,
-	.bmAttributes = USB_ENDPOINT_XFER_BULK,
+	.bmAttributes     = USB_ENDPOINT_XFER_BULK,
 };
 
 static struct usb_endpoint_descriptor fs_mfi_sink_desc = {
-	.bLength = USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType = USB_DT_ENDPOINT,
+	.bLength          = USB_DT_ENDPOINT_SIZE,
+	.bDescriptorType  = USB_DT_ENDPOINT,
 	.bEndpointAddress = USB_DIR_OUT,
-	.bmAttributes = USB_ENDPOINT_XFER_BULK,
+	.bmAttributes     = USB_ENDPOINT_XFER_BULK,
 };
 
 static struct usb_descriptor_header *fs_mfi_descs[] = {
@@ -143,17 +143,17 @@ static struct usb_descriptor_header *fs_mfi_descs[] = {
 /* high speed support: */
 
 static struct usb_endpoint_descriptor hs_mfi_source_desc = {
-	.bLength = USB_DT_ENDPOINT_SIZE,
+	.bLength         = USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType = USB_DT_ENDPOINT,
-	.bmAttributes = USB_ENDPOINT_XFER_BULK,
-	.wMaxPacketSize = cpu_to_le16(512),
+	.bmAttributes    = USB_ENDPOINT_XFER_BULK,
+	.wMaxPacketSize  = cpu_to_le16(512),
 };
 
 static struct usb_endpoint_descriptor hs_mfi_sink_desc = {
-	.bLength = USB_DT_ENDPOINT_SIZE,
+	.bLength         = USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType = USB_DT_ENDPOINT,
-	.bmAttributes = USB_ENDPOINT_XFER_BULK,
-	.wMaxPacketSize = cpu_to_le16(512),
+	.bmAttributes    = USB_ENDPOINT_XFER_BULK,
+	.wMaxPacketSize  = cpu_to_le16(512),
 };
 
 static struct usb_descriptor_header *hs_mfi_descs[] = {
@@ -166,32 +166,32 @@ static struct usb_descriptor_header *hs_mfi_descs[] = {
 /* super speed support: */
 
 static struct usb_endpoint_descriptor ss_mfi_source_desc = {
-	.bLength = USB_DT_ENDPOINT_SIZE,
+	.bLength         = USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType = USB_DT_ENDPOINT,
-	.bmAttributes = USB_ENDPOINT_XFER_BULK,
-	.wMaxPacketSize = cpu_to_le16(1024),
+	.bmAttributes    = USB_ENDPOINT_XFER_BULK,
+	.wMaxPacketSize  = cpu_to_le16(1024),
 };
 
 static struct usb_ss_ep_comp_descriptor ss_mfi_source_comp_desc = {
-	.bLength = USB_DT_SS_EP_COMP_SIZE,
-	.bDescriptorType = USB_DT_SS_ENDPOINT_COMP,
-	.bMaxBurst = 0,
-	.bmAttributes = 0,
+	.bLength           = USB_DT_SS_EP_COMP_SIZE,
+	.bDescriptorType   = USB_DT_SS_ENDPOINT_COMP,
+	.bMaxBurst         = 0,
+	.bmAttributes      = 0,
 	.wBytesPerInterval = 0,
 };
 
 static struct usb_endpoint_descriptor ss_mfi_sink_desc = {
-	.bLength = USB_DT_ENDPOINT_SIZE,
+	.bLength         = USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType = USB_DT_ENDPOINT,
-	.bmAttributes = USB_ENDPOINT_XFER_BULK,
-	.wMaxPacketSize = cpu_to_le16(1024),
+	.bmAttributes    = USB_ENDPOINT_XFER_BULK,
+	.wMaxPacketSize  = cpu_to_le16(1024),
 };
 
 static struct usb_ss_ep_comp_descriptor ss_mfi_sink_comp_desc = {
-	.bLength = USB_DT_SS_EP_COMP_SIZE,
-	.bDescriptorType = USB_DT_SS_ENDPOINT_COMP,
-	.bMaxBurst = 0,
-	.bmAttributes = 0,
+	.bLength           = USB_DT_SS_EP_COMP_SIZE,
+	.bDescriptorType   = USB_DT_SS_ENDPOINT_COMP,
+	.bMaxBurst         = 0,
+	.bmAttributes      = 0,
 	.wBytesPerInterval = 0,
 };
 
@@ -214,7 +214,7 @@ static struct usb_string strings_mfi[] = {
 
 static struct usb_gadget_strings stringtab_mfi = {
 	.language = 0x0409, /* en-us */
-	.strings = strings_mfi,
+	.strings  = strings_mfi,
 };
 
 static struct usb_gadget_strings *mfi_strings[] = {
@@ -261,9 +261,9 @@ static int mfi_send_async(struct f_mfi *mfi)
 	if (unlikely(NULL == mfi->write_req))
 		return -ENOMEM;
 
-	mfi->write_req->context = mfi;
+	mfi->write_req->context  = mfi;
 	mfi->write_req->complete = mfi_complete;
-	mfi->write_req->length = mfi->out_buf_cnt;
+	mfi->write_req->length   = mfi->out_buf_cnt;
 	memcpy(mfi->write_req->buf, mfi->out_buf, mfi->out_buf_cnt);
 
 	/* temporary unlock to avoid deadlock in complete callback */
@@ -287,9 +287,9 @@ static int mfi_recv_async(struct f_mfi *mfi)
 	if (unlikely(NULL == mfi->read_req))
 		return -ENOMEM;
 
-	mfi->read_req->context = mfi;
+	mfi->read_req->context  = mfi;
 	mfi->read_req->complete = mfi_complete;
-	mfi->read_req->length = mfi->out_ep->maxpacket;
+	mfi->read_req->length   = mfi->out_ep->maxpacket;
 
 	/* temporary unlock to avoid deadlock in complete callback */
 	mfi_spin_unlock(mfi);
@@ -511,12 +511,12 @@ static long mfi_ioctl(struct file *file, unsigned int code, unsigned long arg)
 }
 
 static struct file_operations mfi_fops = {
-	.owner = THIS_MODULE,
-	.open = mfi_open,
-	.release = mfi_release,
-	.read = mfi_read,
-	.write = mfi_write,
-	.poll = mfi_poll,
+	.owner          = THIS_MODULE,
+	.open           = mfi_open,
+	.release        = mfi_release,
+	.read           = mfi_read,
+	.write          = mfi_write,
+	.poll           = mfi_poll,
 	.unlocked_ioctl = mfi_ioctl,
 };
 
@@ -621,7 +621,8 @@ static inline int mfi_chrdev_register(struct f_mfi *mfi)
 	}
 
 	mfi->minor = mfi_get_first_available_minor();
-	devt = MKDEV(mfi_major, mfi->minor);
+	devt       = MKDEV(mfi_major, mfi->minor);
+
 	pdev = device_create(mfi_class, NULL, devt, NULL, "mfi%d", mfi->minor);
 	if (unlikely(IS_ERR(pdev))) {
 		mfi_dev_err(mfi, "mfi_chrdev_register: device_create\n");
@@ -635,6 +636,7 @@ static inline int mfi_chrdev_register(struct f_mfi *mfi)
 
 	cdev_init(&mfi->cdev, &mfi_fops);
 	mfi->cdev.owner = THIS_MODULE;
+
 	err = cdev_add(&mfi->cdev, devt, 1);
 	if (unlikely(err)) {
 		mfi_dev_err(mfi, "mfi_chrdev_register: cdev_add, err = %d\n",
@@ -896,11 +898,11 @@ static struct usb_function *mfi_alloc(struct usb_function_instance *fi)
 	if (unlikely(!mfi))
 		return ERR_PTR(-ENOMEM);
 
-	mfi->function.name = "mfi";
-	mfi->function.bind = mfi_bind;
-	mfi->function.set_alt = mfi_set_alt;
-	mfi->function.disable = mfi_disable;
-	mfi->function.strings = mfi_strings;
+	mfi->function.name      = "mfi";
+	mfi->function.bind      = mfi_bind;
+	mfi->function.set_alt   = mfi_set_alt;
+	mfi->function.disable   = mfi_disable;
+	mfi->function.strings   = mfi_strings;
 	mfi->function.free_func = mfi_free_func;
 
 	return &mfi->function;
@@ -924,8 +926,8 @@ static struct configfs_item_operations mfi_item_ops = {
 
 static const struct config_item_type mfi_func_type = {
 	.ct_item_ops = &mfi_item_ops,
-	.ct_attrs = mfi_attrs,
-	.ct_owner = THIS_MODULE,
+	.ct_attrs    = mfi_attrs,
+	.ct_owner    = THIS_MODULE,
 };
 
 static void mfi_free_instance(struct usb_function_instance *fi)
