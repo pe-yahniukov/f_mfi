@@ -413,7 +413,7 @@ static ssize_t mfi_write(struct file *file, const char *buf, size_t len,
 	ret = copy_from_user(mfi->out_buf, buf, len);
 	if (unlikely(ret)) {
 		mfi_dev_warn(mfi, "/dev/mfi%d: copy_from_user, err = %d\n",
-			    mfi->minor, ret);
+			     mfi->minor, ret);
 		ret = 0;
 		goto mfi_write_exit;
 	}
@@ -421,7 +421,8 @@ static ssize_t mfi_write(struct file *file, const char *buf, size_t len,
 
 	ret = mfi_send_async(mfi);
 	if (unlikely(ret)) {
-		mfi_dev_err(mfi, "/dev/mfi%d: mfi_send, err = %d\n", mfi->minor, ret);
+		mfi_dev_err(mfi, "/dev/mfi%d: mfi_send, err = %d\n", mfi->minor,
+			    ret);
 		ret = 0;
 	} else {
 		ret = (int)len;
@@ -621,8 +622,7 @@ static inline int mfi_chrdev_register(struct f_mfi *mfi)
 
 	mfi->minor = mfi_get_first_available_minor();
 	devt = MKDEV(mfi_major, mfi->minor);
-	pdev = device_create(mfi_class, NULL, devt, NULL, "mfi%d",
-			     mfi->minor);
+	pdev = device_create(mfi_class, NULL, devt, NULL, "mfi%d", mfi->minor);
 	if (unlikely(IS_ERR(pdev))) {
 		mfi_dev_err(mfi, "mfi_chrdev_register: device_create\n");
 		return PTR_ERR(pdev);
