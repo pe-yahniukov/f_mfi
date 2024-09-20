@@ -27,6 +27,12 @@ See patches/ folder for example(s) on how to incorporate the driver into the Lin
 * example/mfi_gadget_create.sh - example of creating the gadget
 * example/example.c - C example of working with the character device that was created by the gadget
 
+## What's next?
+
+Please visit Apple MFi program and attend to it in order to obtain Accessory Interface Specification and many other useful documentation. This will allow you to implement the iAP2 session protocol in your application. This driver will be used as a transport to communicate with your target Apple devices. Good luck!
+
+https://mfi.apple.com
+
 ## License
 
 Dual MIT OR GPL-2.0. See LICENSE file.
