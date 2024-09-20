@@ -254,7 +254,7 @@ static inline int mfi_send_async(struct f_mfi *mfi)
 
 	int ret = 0;
 
-	if (unlikely(mfi->write_req))
+	if (mfi->write_req)
 		return -EBUSY;
 
 	mfi->write_req = mfi_alloc_req(mfi->in_ep);
@@ -280,7 +280,7 @@ static inline int mfi_recv_async(struct f_mfi *mfi)
 
 	int ret = 0;
 
-	if (unlikely(mfi->read_req))
+	if (mfi->read_req)
 		return -EBUSY;
 
 	mfi->read_req = mfi_alloc_req(mfi->out_ep);
@@ -322,7 +322,7 @@ static int mfi_open(struct inode *inode, struct file *file)
 
 	mutex_lock(&mfi->mutex);
 
-	if (unlikely(mfi->task)) {
+	if (mfi->task) {
 		mutex_unlock(&mfi->mutex);
 		return -EBUSY;
 	}
@@ -341,7 +341,7 @@ static int mfi_release(struct inode *inode, struct file *file)
 
 	mutex_lock(&mfi->mutex);
 
-	if (unlikely(mfi_permission_denied(mfi))) {
+	if (mfi_permission_denied(mfi)) {
 		mutex_unlock(&mfi->mutex);
 		return -EPERM;
 	}
@@ -362,11 +362,11 @@ static ssize_t mfi_read(struct file *file, char __user *buf, size_t len,
 
 	mutex_lock(&mfi->mutex);
 
-	if (unlikely(mfi_permission_denied(mfi))) {
+	if (mfi_permission_denied(mfi)) {
 		mutex_unlock(&mfi->mutex);
 		return -EPERM;
 	}
-	if (unlikely(!mfi->in_buf_cnt)) {
+	if (!mfi->in_buf_cnt) {
 		mutex_unlock(&mfi->mutex);
 		return 0;
 	}
@@ -399,11 +399,11 @@ static ssize_t mfi_write(struct file *file, const char *buf, size_t len,
 
 	mutex_lock(&mfi->mutex);
 
-	if (unlikely(mfi_permission_denied(mfi))) {
+	if (mfi_permission_denied(mfi)) {
 		mutex_unlock(&mfi->mutex);
 		return -EPERM;
 	}
-	if (unlikely(!len)) {
+	if (!len) {
 		mutex_unlock(&mfi->mutex);
 		return 0;
 	}
@@ -443,13 +443,13 @@ static __poll_t mfi_poll(struct file *file, poll_table *wait)
 
 	mutex_lock(&mfi->mutex);
 
-	if (unlikely(mfi_permission_denied(mfi))) {
+	if (mfi_permission_denied(mfi)) {
 		status |= EPOLLERR;
 		goto mfi_poll_exit;
 	}
 
 	mfi_spin_lock(mfi);
-	if (unlikely(mfi->in_buf_cnt)) {
+	if (mfi->in_buf_cnt) {
 		status |= EPOLLIN;
 		mfi_spin_unlock(mfi);
 		goto mfi_poll_exit;
@@ -479,7 +479,7 @@ static long mfi_ioctl(struct file *file, unsigned int code, unsigned long arg)
 
 	mutex_lock(&mfi->mutex);
 
-	if (unlikely(mfi_permission_denied(mfi))) {
+	if (mfi_permission_denied(mfi)) {
 		mutex_unlock(&mfi->mutex);
 		return -EPERM;
 	}
@@ -559,7 +559,7 @@ static inline int mfi_chrdev_register_region(void)
 	int err;
 	dev_t dev = 0;
 
-	if (unlikely(region_registered))
+	if (region_registered)
 		return 0;
 
 	mfi_class = class_create(THIS_MODULE, "mfi");
@@ -586,7 +586,7 @@ static inline int mfi_chrdev_register_region(void)
 
 static inline void mfi_chrdev_unregister_region(void)
 {
-	if (unlikely(!region_registered))
+	if (!region_registered)
 		return;
 
 	if (likely(mfi_major)) {
@@ -939,7 +939,7 @@ static struct usb_function_instance *mfi_alloc_instance(void)
 {
 	struct f_mfi_opts *mfi_opts = NULL;
 
-	if (unlikely(mfi_interfaces_limit_reached())) {
+	if (mfi_interfaces_limit_reached()) {
 		pr_err("f_mfi: Limit of MFi interfaces count (=%d) was reached\n",
 		       MAX_MFI_INTERFACES);
 		return ERR_PTR(-ENOMEM);
