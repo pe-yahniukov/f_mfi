@@ -226,7 +226,7 @@ static struct usb_gadget_strings *mfi_strings[] = {
 
 static void mfi_complete(struct usb_ep *ep, struct usb_request *req);
 
-static inline struct usb_request *mfi_alloc_req(struct usb_ep *ep)
+static struct usb_request *mfi_alloc_req(struct usb_ep *ep)
 {
 	struct usb_request *req = usb_ep_alloc_request(ep, GFP_ATOMIC);
 	if (unlikely(NULL == req))
@@ -239,7 +239,7 @@ static inline struct usb_request *mfi_alloc_req(struct usb_ep *ep)
 	return req;
 }
 
-static inline void mfi_free_req(struct usb_request *req, struct usb_ep *ep)
+static void mfi_free_req(struct usb_request *req, struct usb_ep *ep)
 {
 	if (likely(req)) {
 		if (likely(req->buf))
@@ -248,7 +248,7 @@ static inline void mfi_free_req(struct usb_request *req, struct usb_ep *ep)
 	}
 }
 
-static inline int mfi_send_async(struct f_mfi *mfi)
+static int mfi_send_async(struct f_mfi *mfi)
 {
 	/* mfi->lock should be locked before calling this function */
 
@@ -274,7 +274,7 @@ static inline int mfi_send_async(struct f_mfi *mfi)
 	return ret;
 }
 
-static inline int mfi_recv_async(struct f_mfi *mfi)
+static int mfi_recv_async(struct f_mfi *mfi)
 {
 	/* mfi->lock should be locked before calling this function */
 
@@ -529,7 +529,7 @@ static struct class *mfi_class = NULL;
 static bool region_registered = false;
 static bool mfi_interfaces_minors[MAX_MFI_INTERFACES];
 
-static inline int mfi_get_first_available_minor(void)
+static int mfi_get_first_available_minor(void)
 {
 	int i;
 	for (i = 0; i < MAX_MFI_INTERFACES; ++i) {
@@ -786,7 +786,7 @@ static void mfi_free_func(struct usb_function *f)
 	kfree(mfi);
 }
 
-static inline void disable_mfi(struct f_mfi *mfi)
+static void disable_mfi(struct f_mfi *mfi)
 {
 	mfi_spin_lock(mfi);
 	mfi_free_req(mfi->read_req, mfi->out_ep);
@@ -843,7 +843,7 @@ static inline int enable_endpoint(struct usb_composite_dev *cdev,
 	return usb_ep_enable(ep);
 }
 
-static inline int enable_mfi(struct usb_composite_dev *cdev, struct f_mfi *mfi)
+static int enable_mfi(struct usb_composite_dev *cdev, struct f_mfi *mfi)
 {
 	int ret = 0;
 
